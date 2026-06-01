@@ -726,6 +726,8 @@ export const ParticleScene: React.FC<ParticleSceneProps> = ({
 
     addScreenBranch('C1', -1, 5.6, isWideMasterScreen ? 24 : 16);
     addScreenBranch('C2', -1, 4.2, isWideMasterScreen ? 22 : 14);
+    addScreenBranch('C3', 1, 4.2, isWideMasterScreen ? 22 : 14);
+    addScreenBranch('C4', 1, 5.6, isWideMasterScreen ? 24 : 16);
     addScreenBranch('L1', -1, 1.2, isWideMasterScreen ? 22 : 14);
     addScreenBranch('L2', -1, -1.2, isWideMasterScreen ? 20 : 12);
     addScreenBranch('R1', 1, 1.2, isWideMasterScreen ? 22 : 14);
