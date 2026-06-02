@@ -4,6 +4,15 @@ const controlToken = SHOW_CONTROL_TOKEN;
 const databaseUrl = FIREBASE_DATABASE_URL;
 const showId = SHOW_ID;
 
+export function getScreenGatewayUrl(screenId: string) {
+  const url = new URL(SHOW_BACKEND_URL || window.location.origin);
+  url.pathname = `/screen/${encodeURIComponent(screenId)}`;
+  url.search = '';
+  if (showId && showId !== 'show-main') url.searchParams.set('room', showId);
+  url.hash = '';
+  return url.toString().replace(/\/$/, '');
+}
+
 export type ScreenOwner = 'vj' | 'baofa' | 'off' | 'diagnostic' | 'external';
 
 export type ScreenRoute = {
