@@ -4,7 +4,7 @@ const controlToken = SHOW_CONTROL_TOKEN;
 const databaseUrl = FIREBASE_DATABASE_URL;
 const showId = SHOW_ID;
 
-export type ScreenOwner = 'vj' | 'baofa' | 'off' | 'diagnostic';
+export type ScreenOwner = 'vj' | 'baofa' | 'off' | 'diagnostic' | 'external';
 
 export type ScreenRoute = {
   screenId: string;

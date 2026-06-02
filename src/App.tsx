@@ -1625,7 +1625,7 @@ export default function App() {
   useEffect(() => {
     if (!isKnownScreenId(routeScreenId)) return;
     if (!screenRoute || screenRoute.owner === 'baofa' || !screenPresentation.autoRedirect) return;
-    if (screenRoute.owner === 'vj' && screenRoute.url) {
+    if (screenRoute.url && screenRoute.owner !== 'off' && screenRoute.owner !== 'diagnostic') {
       const targetUrl = screenRoute.url;
       window.location.replace(targetUrl);
     }
@@ -2493,9 +2493,11 @@ export default function App() {
     const routeLabel =
       screenRoute.owner === 'vj'
         ? 'VJ / 已路由到 VJ'
-        : screenRoute.owner === 'diagnostic'
-          ? 'Diagnostic / 诊断'
-          : 'Off / 关闭';
+        : screenRoute.owner === 'external'
+          ? 'External / 外部页面'
+          : screenRoute.owner === 'diagnostic'
+            ? 'Diagnostic / 诊断'
+            : 'Off / 关闭';
 
     return (
       <div className="fixed inset-0 flex items-center justify-center bg-[#02040a] px-8 text-white">
@@ -2514,7 +2516,7 @@ export default function App() {
               Open routed screen / 打开路由屏
             </a>
           )}
-          {screenPresentation.autoRedirect && targetUrl && screenRoute.owner === 'vj' && (
+          {screenPresentation.autoRedirect && targetUrl && screenRoute.owner !== 'off' && screenRoute.owner !== 'diagnostic' && (
             <div className="text-[9px] font-mono uppercase tracking-widest text-white/35">
               Redirecting automatically / 自动跳转中
             </div>
