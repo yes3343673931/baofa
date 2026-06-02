@@ -11,7 +11,7 @@ import { db, handleFirestoreError, isFirebaseConfigured, OperationType } from '.
 import { createShowControlClient, type ControlCommand } from './lib/showControlClient';
 import { APP_PORT } from './lib/runtimeConfig';
 import { ShowRuntimeSettingsPanel } from './components/ShowRuntimeSettingsPanel';
-import { fetchScreenState, subscribeScreenState, type ScreenPresentation, type ScreenRoute } from './lib/screenRoutes';
+import { fetchScreenState, getScreenGatewayUrl, subscribeScreenState, type ScreenPresentation, type ScreenRoute } from './lib/screenRoutes';
 import { doc, getDocFromServer, onSnapshot, setDoc } from 'firebase/firestore';
 import { Activity, Camera, CameraOff, ExternalLink, LayoutGrid, MonitorCog, Route, Sparkles } from 'lucide-react';
 import {
@@ -139,9 +139,10 @@ type WebGLStats = {
 };
 
 type TreePhase = 'idle' | 'growing' | 'bright' | 'fading';
-type VisualMode = 'tree' | 'firework' | 'standby';
+type VisualMode = 'tree' | 'firework';
 type TreeControlMode = 'manual' | 'auto';
 type FireworkPanelBurstKind = FireworkBurstKind | 'giant';
+type FishMode = 'idle' | 'run' | 'roam';
 type FishRoutePoint = { col: number; row: number; screenId?: string };
 
 const AUTO_FISH_PATH = ['A1', 'B2', 'B3', 'B4', 'B5', 'D2', 'D1', 'L1', 'E1', 'R2', 'F1'];
@@ -158,7 +159,6 @@ const STANDBY_WAKE_GROUPS = ['A', 'B', 'C', 'D', 'E', 'F', 'L', 'R'] as const;
 const STANDBY_WAKE_STEP_MS = 520;
 const STANDBY_WAKE_HOLD_MS = 2500;
 const STANDBY_WAKE_TOTAL_MS = STANDBY_WAKE_GROUPS.length * STANDBY_WAKE_STEP_MS + STANDBY_WAKE_HOLD_MS;
-const STANDBY_FISH_START_DELAY_MS = 2000;
 
 function getStandbyWakeGroup(id: string) {
   if (id === 'MASTER') return 'A';
@@ -177,9 +177,9 @@ function getScreenLayout(id: string) {
     : SCREEN_LAYOUT_ITEMS.find((item) => item.id === id) ?? MASTER_SCREEN;
 }
 
-function getFishRoutePoint(id: string, role: 'center' | 'entry' | 'exit' = 'center') {
-  const screen = getScreenLayout(id);
+function getFishRoutePoint(id: string, role: 'center' | 'entry' | 'exit' = 'center'): FishRoutePoint {
   const screenId = id === 'MASTER' ? 'A1' : id;
+  const screen = getScreenLayout(id);
   const width = screen.width ?? 0.78;
   const height = screen.height ?? 0.52;
 
@@ -208,10 +208,10 @@ const DEFAULT_AUTO_FISH_ROUTE: FishRoutePoint[] = [
   getFishRoutePoint('F1', 'exit'),
 ];
 
-const WANDER_FISH_SCREEN_IDS = ['A1', ...SCREEN_LAYOUT_ITEMS.map((screen) => screen.id)];
+const ROAM_FISH_SCREEN_IDS = ['A1', ...SCREEN_LAYOUT_ITEMS.map((screen) => screen.id)];
 
-function createWanderFishRoute(): FishRoutePoint[] {
-  const shuffled = [...WANDER_FISH_SCREEN_IDS].sort(() => Math.random() - 0.5);
+function createRoamFishRoute(): FishRoutePoint[] {
+  const shuffled = [...ROAM_FISH_SCREEN_IDS].sort(() => Math.random() - 0.5);
   const waypointCount = 9 + Math.floor(Math.random() * 5);
   const waypoints = shuffled.slice(0, waypointCount);
   const first = waypoints[0] ?? 'A1';
@@ -260,7 +260,13 @@ function getAutoFishScreenRevealProgress(id: string) {
   return AUTO_FISH_GATHER_FRACTION + travelLeaveProgress * (1 - AUTO_FISH_GATHER_FRACTION);
 }
 
-function getFishPosition(progress: number, screenId: string, isOverview: boolean, route: FishRoutePoint[] = DEFAULT_AUTO_FISH_ROUTE, revealFromA1 = true) {
+function getFishPosition(
+  progress: number,
+  screenId: string,
+  isOverview: boolean,
+  route: FishRoutePoint[] = DEFAULT_AUTO_FISH_ROUTE,
+  revealFromA1 = true
+) {
   if (isOverview) {
     const stage = getFishStagePosition(progress, route);
     return {
@@ -549,9 +555,8 @@ function AutoFishSchoolScene({
         matrixObject.scale.set(0.92 * size, 0.36 * size, 1);
         matrixObject.updateMatrix();
         fishMesh.setMatrixAt(0, matrixObject.matrix);
-        fishMesh.instanceMatrix.needsUpdate = true;
       } else {
-      fishData.forEach((fish, index) => {
+        fishData.forEach((fish, index) => {
         const batchProgress = THREE.MathUtils.clamp((progress - fish.batchDelay) / (1 - fish.batchDelay), 0, 1);
         const presence = THREE.MathUtils.smoothstep(progress, fish.batchDelay, fish.batchDelay + 0.038) * exitOpacity;
         if (presence <= 0.001) {
@@ -579,9 +584,9 @@ function AutoFishSchoolScene({
         matrixObject.scale.set(length, height, 1);
         matrixObject.updateMatrix();
         fishMesh.setMatrixAt(index, matrixObject.matrix);
-      });
-      fishMesh.instanceMatrix.needsUpdate = true;
+        });
       }
+      fishMesh.instanceMatrix.needsUpdate = true;
     }
 
     if (glowTrail) {
@@ -592,8 +597,7 @@ function AutoFishSchoolScene({
         glowTrailMaterialRef.current.uniforms.uOpacity.value = singleFish ? 0 : Math.min(1, trailOpacity * 1.45);
         glowTrailMaterialRef.current.uniforms.uDpr.value = Math.min(window.devicePixelRatio || 1, 2);
       }
-      if (singleFish) return;
-      glowTrailData.forEach((dot, index) => {
+      if (!singleFish) glowTrailData.forEach((dot, index) => {
         const bandDepth = dot.band / 10;
         const tailFalloff = THREE.MathUtils.clamp(1 - bandDepth * 0.72, 0.2, 1);
         const laneSpread = (dot.lane - 24) / 24;
@@ -610,8 +614,10 @@ function AutoFishSchoolScene({
         glowTrailPositions[index * 3 + 2] = 0.02 + tailFalloff * 0.01;
         glowTrailSizes[index] = (3.4 + dot.size * 2.2) * tailFalloff * (isOverview ? 0.95 : 1.34) * AUTO_FISH_TRAIL_SIZE_SCALE;
       });
-      positions.needsUpdate = true;
-      sizes.needsUpdate = true;
+      if (!singleFish) {
+        positions.needsUpdate = true;
+        sizes.needsUpdate = true;
+      }
     }
 
     if (trail) {
@@ -619,9 +625,8 @@ function AutoFishSchoolScene({
       const positions = trail.geometry.attributes.position;
       const material = trail.material as THREE.PointsMaterial;
       material.opacity = singleFish ? 0 : Math.min(1, trailOpacity * 1.32);
-      if (singleFish) return;
       material.size = 0.078 * (isOverview ? 1 : 1.48) * AUTO_FISH_TRAIL_SIZE_SCALE;
-      trailData.forEach((dot, index) => {
+      if (!singleFish) trailData.forEach((dot, index) => {
         const flow = (progress * 4.8 + dot.seed) % 2.3;
         const curlX = Math.sin(progress * 21 + dot.lane * 0.72 + dot.band * 1.9) * 0.38;
         const curlY = Math.cos(progress * 19 + dot.lane * 0.64 + dot.band * 1.5) * 0.28;
@@ -631,7 +636,7 @@ function AutoFishSchoolScene({
         trailPositions[index * 3 + 1] = centerY + Math.sin(baseAngle) * localX + Math.cos(baseAngle) * localY;
         trailPositions[index * 3 + 2] = 0;
       });
-      positions.needsUpdate = true;
+      if (!singleFish) positions.needsUpdate = true;
     }
 
   });
@@ -965,6 +970,7 @@ export default function App() {
     getAudioData,
   } = useAudio();
   const { isHandOpen, openHandCount, hasHandDetected, isCameraActive, cameraError, startCamera, stopCamera } = useHandTracking();
+  const cameraControlRef = useRef({ isCameraActive, startCamera, stopCamera });
   const [audioData, setAudioData] = useState(new Float32Array(1024));
   const [interactionPoint, setInteractionPoint] = useState<THREE.Vector3 | null>(null);
   const [fireworkScratchPoint, setFireworkScratchPoint] = useState<THREE.Vector3 | null>(null);
@@ -985,6 +991,7 @@ export default function App() {
   const [autoFishActive, setAutoFishActive] = useState(false);
   const [autoFishProgress, setAutoFishProgress] = useState(0);
   const [autoFishRoute, setAutoFishRoute] = useState<FishRoutePoint[]>(DEFAULT_AUTO_FISH_ROUTE);
+  const [fishMode, setFishMode] = useState<FishMode>('idle');
   const [fireworkPreludeStartedAt, setFireworkPreludeStartedAt] = useState<number | null>(null);
   const [showScreenPanel, setShowScreenPanel] = useState(() => isLocalPreview);
   const [webglDebugOpen, setWebglDebugOpen] = useState(false);
@@ -1004,12 +1011,11 @@ export default function App() {
   const [screenRoutes, setScreenRoutes] = useState<Record<string, ScreenRoute>>({});
   const [screenPresentation, setScreenPresentation] = useState<ScreenPresentation>({
     autoRedirect: true,
+    cameraEnabled: false,
     showDebug: true,
     showMenu: true,
   });
-  const [localPreviewUnlocked, setLocalPreviewUnlocked] = useState(() => (
-    isLocalPreview ? localStorage.getItem('baofa-local-preview-unlocked') !== 'false' : false
-  ));
+  const [showStatus, setShowStatus] = useState<'standby' | 'running' | 'paused' | 'ended'>('standby');
   const [screenRouteError, setScreenRouteError] = useState('');
   const intensityRef = useRef(0.08);
   const lastClickTimeRef = useRef(0);
@@ -1047,12 +1053,26 @@ export default function App() {
     showControlClientIdRef.current = createShowControlClientId(screenId);
   }
   const showControlCommandRef = useRef<(command: ControlCommand) => void>(() => undefined);
+  useEffect(() => {
+    cameraControlRef.current = { isCameraActive, startCamera, stopCamera };
+  }, [isCameraActive, startCamera, stopCamera]);
+
+  useEffect(() => {
+    const cameraControl = cameraControlRef.current;
+    if (screenPresentation.cameraEnabled && !cameraControl.isCameraActive) {
+      void cameraControl.startCamera();
+    } else if (!screenPresentation.cameraEnabled && cameraControl.isCameraActive) {
+      cameraControl.stopCamera();
+    }
+  }, [screenPresentation.cameraEnabled]);
+
   const refreshScreenState = useCallback(async (signal?: AbortSignal) => {
     try {
-      const { routes, presentation } = await fetchScreenState(signal);
+      const { routes, presentation, showStatus: nextShowStatus } = await fetchScreenState(signal);
       setScreenRoutes(routes);
       setScreenRoute(isKnownScreenId(routeScreenId) ? routes[routeScreenId] || null : null);
       setScreenPresentation(presentation);
+      setShowStatus(nextShowStatus);
       setScreenRouteError('');
     } catch (error) {
       if (signal?.aborted) return;
@@ -1209,14 +1229,22 @@ export default function App() {
         setScreenPulse({ source, timestamp: data.screenPulse.timestamp });
       }
       if (data.baofaFishState === 'running') {
+        const nextFishMode: FishMode = data.baofaFishMode === 'roam' ? 'roam' : 'run';
         if (Array.isArray(data.baofaFishRoute)) {
           const nextRoute = data.baofaFishRoute
             .filter((point: any) => typeof point?.col === 'number' && typeof point?.row === 'number')
-            .map((point: any) => ({ col: point.col, row: point.row }));
+            .map((point: any) => ({
+              col: point.col,
+              row: point.row,
+              screenId: typeof point.screenId === 'string' ? point.screenId : undefined,
+            }));
           if (nextRoute.length >= 2) {
             setAutoFishRoute(nextRoute);
           }
+        } else if (nextFishMode === 'run') {
+          setAutoFishRoute(DEFAULT_AUTO_FISH_ROUTE);
         }
+        setFishMode(nextFishMode);
         if (autoFishStartedAtRef.current === null) {
           autoFishStartedAtRef.current = performance.now();
           setAutoFishProgress(0);
@@ -1224,9 +1252,10 @@ export default function App() {
         setAutoFishActive(true);
       } else if (data.baofaFishState === 'idle') {
         autoFishStartedAtRef.current = null;
-        setAutoFishRoute(DEFAULT_AUTO_FISH_ROUTE);
         setAutoFishProgress(0);
         setAutoFishActive(false);
+        setFishMode('idle');
+        setAutoFishRoute(DEFAULT_AUTO_FISH_ROUTE);
       }
     }, (error) => {
       handleFirestoreError(error, OperationType.GET, 'global/state');
@@ -1252,25 +1281,31 @@ export default function App() {
     setFireworkPreludeStartedAt(null);
   }, []);
 
-  const startFishRun = useCallback((publish = true, route: FishRoutePoint[] = DEFAULT_AUTO_FISH_ROUTE) => {
+  const startFishRun = useCallback((publish = true, route: FishRoutePoint[] = DEFAULT_AUTO_FISH_ROUTE, mode: FishMode = 'run') => {
     autoFishStartedAtRef.current = performance.now();
     setAutoFishRoute(route);
+    setFishMode(mode);
     setAutoFishProgress(0);
     setAutoFishActive(true);
     if (publish) {
-      syncToFirebase({ baofaFishState: 'running', baofaFishRoute: route });
+      syncToFirebase({ baofaFishState: 'running', baofaFishMode: mode, baofaFishRoute: route });
     }
   }, [syncToFirebase]);
 
   const stopFishRun = useCallback((publish = true) => {
     autoFishStartedAtRef.current = null;
     setAutoFishRoute(DEFAULT_AUTO_FISH_ROUTE);
+    setFishMode('idle');
     setAutoFishProgress(0);
     setAutoFishActive(false);
     if (publish) {
-      syncToFirebase({ baofaFishState: 'idle', baofaFishRoute: null });
+      syncToFirebase({ baofaFishState: 'idle', baofaFishMode: 'idle', baofaFishRoute: null });
     }
   }, [syncToFirebase]);
+
+  const startFishRoam = useCallback((publish = true) => {
+    startFishRun(publish, createRoamFishRoute(), 'roam');
+  }, [startFishRun]);
 
   const stopStandbyWake = useCallback(() => {
     if (standbyWakeTimerRef.current) {
@@ -1481,17 +1516,19 @@ export default function App() {
       const nextProgress = THREE.MathUtils.clamp((performance.now() - autoFishStartedAtRef.current) / AUTO_FISH_DURATION_MS, 0, 1);
       setAutoFishProgress(nextProgress);
       if (nextProgress >= 1) {
-        if (visualMode === 'standby') {
-          const route = createWanderFishRoute();
+        if (fishMode === 'roam') {
+          const route = createRoamFishRoute();
           autoFishStartedAtRef.current = performance.now();
           setAutoFishRoute(route);
           setAutoFishProgress(0);
           setAutoFishActive(true);
-          syncToFirebase({ baofaFishState: 'running', baofaFishRoute: route });
+          syncToFirebase({ baofaFishState: 'running', baofaFishMode: 'roam', baofaFishRoute: route });
         } else {
           autoFishStartedAtRef.current = null;
           setAutoFishActive(false);
-          syncToFirebase({ baofaFishState: 'idle', baofaFishRoute: null });
+          setFishMode('idle');
+          setAutoFishRoute(DEFAULT_AUTO_FISH_ROUTE);
+          syncToFirebase({ baofaFishState: 'idle', baofaFishMode: 'idle', baofaFishRoute: null });
         }
       }
     }
@@ -1516,7 +1553,7 @@ export default function App() {
     }
 
     requestRef.current = requestAnimationFrame(animate);
-  }, [fadeToSingleLayer, fadeTreeMusic, getAudioData, hasHandDetected, isCameraActive, isHandOpen, mode, openHandCount, scheduleStandbyPrompt, setMusicEvolution, soundEnabled, startGestureGrowth, stopAllLayers, syncToFirebase, treeControlMode, updateTreeLayers, visualMode]);
+  }, [fadeToSingleLayer, fadeTreeMusic, fishMode, getAudioData, hasHandDetected, isCameraActive, isHandOpen, mode, openHandCount, scheduleStandbyPrompt, setMusicEvolution, soundEnabled, startGestureGrowth, stopAllLayers, syncToFirebase, treeControlMode, updateTreeLayers, visualMode]);
 
   useEffect(() => {
     requestRef.current = requestAnimationFrame(animate);
@@ -1587,13 +1624,12 @@ export default function App() {
 
   useEffect(() => {
     if (!isKnownScreenId(routeScreenId)) return;
-    if (isLocalPreview && localPreviewUnlocked) return;
     if (!screenRoute || screenRoute.owner === 'baofa' || !screenPresentation.autoRedirect) return;
-    if (screenRoute.owner === 'vj' && screenRoute.url) {
-      const targetUrl = screenRoute.url;
+    if (screenRoute.url && screenRoute.owner !== 'off' && screenRoute.owner !== 'diagnostic') {
+      const targetUrl = screenRoute.owner === 'external' ? getScreenGatewayUrl(routeScreenId) : screenRoute.url;
       window.location.replace(targetUrl);
     }
-  }, [isLocalPreview, localPreviewUnlocked, routeScreenId, screenPresentation.autoRedirect, screenRoute]);
+  }, [routeScreenId, screenPresentation.autoRedirect, screenRoute]);
 
   useEffect(() => {
     localStorage.setItem('baofa-role', isOverview ? 'overview' : 'screen');
@@ -1602,11 +1638,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('baofa-view', isOverview ? 'overview' : 'screen');
   }, [isOverview]);
-
-  useEffect(() => {
-    if (!isLocalPreview) return;
-    localStorage.setItem('baofa-local-preview-unlocked', localPreviewUnlocked ? 'true' : 'false');
-  }, [isLocalPreview, localPreviewUnlocked]);
 
   useEffect(() => {
     if (visualMode !== 'firework') return;
@@ -1719,17 +1750,6 @@ export default function App() {
   }, []);
 
   const openScreenRoute = useCallback(async (id: string) => {
-    if (isLocalPreview && localPreviewUnlocked) {
-      const nextScreenId = normalizeScreenOccupancyId(id) || id;
-      localStorage.setItem('baofa-view', 'screen');
-      localStorage.setItem('baofa-screen-id', nextScreenId);
-      setScreenId(nextScreenId);
-      setIsOverview(false);
-      setIsMaster(false);
-      window.history.pushState({}, '', `/screen/${encodeURIComponent(nextScreenId)}`);
-      return;
-    }
-
     const route = screenRoutes[id];
     if (!route?.url) return;
 
@@ -1761,7 +1781,7 @@ export default function App() {
     setIsOverview(false);
     setIsMaster(false);
     window.location.assign(route.url);
-  }, [isLocalPreview, isOverview, localPreviewUnlocked, screenId, screenRoutes]);
+  }, [isOverview, screenId, screenRoutes]);
 
   const triggerFireworkAt = useCallback(async (
     point: THREE.Vector3,
@@ -2075,67 +2095,6 @@ export default function App() {
     autoTimelineTimersRef.current.push(growTimer);
   }, [clearAutoTimeline, restartTreeMusic, setMusicEvolution, soundEnabled, startAudio, startStandbyWake, syncToFirebase, updateTreeLayers]);
 
-  const startStandbyMode = useCallback(() => {
-    clearAutoTimeline();
-    audioAutoStartAllowedRef.current = false;
-    stopAllLayers();
-    setVisualMode('standby');
-    setTreeControlMode('manual');
-    setFireworkControlMode('manual');
-    setFireworkState('standby');
-    setAutoBlackout(false);
-    setAutoSceneOpacity(1);
-    autoTreeActiveRef.current = false;
-    autoFireworkActiveRef.current = false;
-    treeGrowthRef.current = 0;
-    treeTriggeredRef.current = false;
-    treeCompletedAtRef.current = null;
-    treeBrightAtRef.current = null;
-    treeFadingRef.current = false;
-    treePhaseRef.current = 'idle';
-    treeControllerRef.current = false;
-    gestureProgressRef.current = 0;
-    gestureCompletedRef.current = false;
-    gestureRoundLockedRef.current = false;
-    gestureNeedsReleaseRef.current = false;
-    gestureInputArmedRef.current = false;
-    intensityRef.current = 0.14;
-    evolutionRef.current = 0;
-    setTreeGrowth(0);
-    setTreeTriggered(false);
-    setGestureActive(false);
-    setGestureProgress(0);
-    setShowGestureProgress(false);
-    setGestureStartPending(false);
-    setGestureRoundLocked(false);
-    setStandbyPromptReady(false);
-    setIntensity(0.14);
-    setMusicEvolution(0);
-    setMode('idle');
-    setInteractionPoint(null);
-    setScreenPulse(null);
-    setFireworkScratchPoint(null);
-    startStandbyWake();
-    const fishStartTimer = window.setTimeout(() => {
-      const route = createWanderFishRoute();
-      startFishRun(false, route);
-      syncToFirebase({ baofaFishState: 'running', baofaFishRoute: route });
-    }, STANDBY_FISH_START_DELAY_MS);
-    autoTimelineTimersRef.current.push(fishStartTimer);
-    syncToFirebase({
-      visualMode: 'standby',
-      treeGrowth: 0,
-      treePhase: 'idle',
-      gestureActive: false,
-      intensity: 0.14,
-      evolution: 0,
-      mode: 'idle',
-      fireworkState: 'standby',
-      baofaFishState: 'idle',
-      baofaFishRoute: null,
-    });
-  }, [clearAutoTimeline, setMusicEvolution, startFishRun, startStandbyWake, stopAllLayers, syncToFirebase]);
-
   const setManualFireworkControl = useCallback(() => {
     clearAutoTimeline();
     stopStandbyWake();
@@ -2167,7 +2126,6 @@ export default function App() {
       updateTreeLayers(treeGrowthRef.current, evolutionRef.current, treeFadingRef.current);
     }
 
-    if (visualMode === 'standby') return;
     if (visualMode === 'tree' && treeControlMode === 'auto') return;
     if (visualMode === 'firework' && fireworkControlMode === 'auto') return;
 
@@ -2288,12 +2246,8 @@ export default function App() {
     } else if (command.command === 'resetTree') {
       resetTreeGrowth(false);
     } else if (command.command === 'setVisualMode' && typeof value === 'string') {
-      if (value === 'standby') {
-        startStandbyMode();
-      } else if (value === 'tree' || value === 'firework') {
+      if (value === 'tree' || value === 'firework') {
         clearAutoTimeline();
-        stopStandbyWake();
-        stopFishRun(false);
         setTreeControlMode('manual');
         setFireworkControlMode('manual');
         setFireworkState('standby');
@@ -2337,13 +2291,16 @@ export default function App() {
     } else if (command.command === 'setBaofaFishState') {
       if (value === 'running') {
         startFishRun(false);
-        syncToFirebase({ baofaFishState: 'running' });
+        syncToFirebase({ baofaFishState: 'running', baofaFishMode: 'run', baofaFishRoute: DEFAULT_AUTO_FISH_ROUTE });
+      } else if (value === 'roam') {
+        const route = createRoamFishRoute();
+        startFishRun(false, route, 'roam');
+        syncToFirebase({ baofaFishState: 'running', baofaFishMode: 'roam', baofaFishRoute: route });
       } else {
         stopFishRun(false);
-        syncToFirebase({ baofaFishState: 'idle' });
+        syncToFirebase({ baofaFishState: 'idle', baofaFishMode: 'idle', baofaFishRoute: null });
       }
     } else if (command.command === 'setScreen' && typeof value === 'string' && isKnownScreenId(value)) {
-      if (isLocalPreview && localPreviewUnlocked) return;
       const normalizedTarget = normalizeScreenOccupancyId(command.target) || command.target;
       const normalizedClientId = normalizeScreenOccupancyId(showControlClientIdRef.current) || showControlClientIdRef.current;
       const normalizedScreenId = normalizeScreenOccupancyId(screenId) || screenId;
@@ -2360,6 +2317,14 @@ export default function App() {
         ...prev,
         showMenu: typeof value === 'boolean' ? value : Boolean(value),
       }));
+    } else if (command.command === 'setScreenCameraEnabled') {
+      const enabled = typeof value === 'boolean' ? value : Boolean(value);
+      setScreenPresentation((prev) => ({
+        ...prev,
+        cameraEnabled: enabled,
+      }));
+      if (enabled) void startCamera();
+      else stopCamera();
     } else if (command.command === 'setScreenDebugVisible') {
       setScreenPresentation((prev) => ({
         ...prev,
@@ -2369,6 +2334,7 @@ export default function App() {
       const presentation = value as Partial<ScreenPresentation>;
       setScreenPresentation((prev) => ({
         autoRedirect: typeof presentation.autoRedirect === 'boolean' ? presentation.autoRedirect : prev.autoRedirect,
+        cameraEnabled: typeof presentation.cameraEnabled === 'boolean' ? presentation.cameraEnabled : prev.cameraEnabled,
         showDebug: typeof presentation.showDebug === 'boolean' ? presentation.showDebug : prev.showDebug,
         showMenu: typeof presentation.showMenu === 'boolean' ? presentation.showMenu : prev.showMenu,
       }));
@@ -2388,8 +2354,6 @@ export default function App() {
     applyEffectMode,
     clearAutoTimeline,
     handleScreenChange,
-    isLocalPreview,
-    localPreviewUnlocked,
     refreshScreenState,
     resetTreeGrowth,
     screenId,
@@ -2407,12 +2371,12 @@ export default function App() {
     setManualFireworkControl,
     setTreeControlMode,
     setVisualMode,
+    startCamera,
     startAutoFireworkShow,
     startFishRun,
-    startStandbyMode,
+    stopCamera,
     stopAllLayers,
     stopFishRun,
-    stopStandbyWake,
     syncToFirebase
   ]);
 
@@ -2459,6 +2423,8 @@ export default function App() {
       visualMode,
       fireworkState,
       baofaFishState: autoFishActive ? 'running' : 'idle',
+      baofaFishMode: fishMode,
+      baofaFishRoute: autoFishActive ? autoFishRoute : null,
     });
   }, [
     connectionStatus,
@@ -2475,7 +2441,9 @@ export default function App() {
     treeGrowth,
     fireworkState,
     autoFishActive,
+    autoFishRoute,
     evolution,
+    fishMode,
     screenPresentation.autoRedirect,
     screenPresentation.showDebug,
     screenPresentation.showMenu,
@@ -2485,25 +2453,14 @@ export default function App() {
   const handGestureActive = isCameraActive && hasHandDetected && isHandOpen && openHandCount > 0;
   const shouldShowMenu = screenPresentation.showMenu;
   const debugEnabled = screenPresentation.showDebug;
+  const showStatusIconClass = `border-white/10 bg-white/5 text-white/45 ${
+    showStatus === 'running' ? 'border-emerald-300/50 bg-emerald-300/12 text-emerald-100' :
+      showStatus === 'paused' ? 'border-amber-300/50 bg-amber-300/12 text-amber-100' : ''
+  }`;
   const autoFishScreenId = isOverview ? 'OVERVIEW' : screenId;
   const focusedScreenId = isOverview ? 'OVERVIEW' : screenId;
   const autoFishStage = autoFishActive ? getFishStagePosition(autoFishProgress, autoFishRoute) : null;
-  const shouldUseOverviewFishMarker =
-    isOverview &&
-    autoFishActive &&
-    (visualMode === 'standby' || visualMode === 'tree');
-  const overviewFishMarker = shouldUseOverviewFishMarker && autoFishStage;
-  const autoFishTargetIndex = autoFishActive
-    ? Math.min(autoFishRoute.length - 1, Math.max(1, Math.ceil(THREE.MathUtils.clamp(autoFishProgress, 0, 1) * (autoFishRoute.length - 1))))
-    : -1;
-  const autoFishTargetScreenId = autoFishTargetIndex >= 0 ? autoFishRoute[autoFishTargetIndex]?.screenId : undefined;
-  const activeControlMode = visualMode === 'firework' ? fireworkControlMode : visualMode === 'tree' ? treeControlMode : 'manual';
-  const visualModeLabel =
-    visualMode === 'firework'
-      ? 'Fireworks / 烟花'
-      : visualMode === 'standby'
-        ? 'Standby / 待机'
-        : 'Tree / 树';
+  const activeControlMode = visualMode === 'firework' ? fireworkControlMode : treeControlMode;
   const currentTreeLabel = effectModes.find((effect) => effect.mode === mode)?.label ?? 'CALM / 静止';
   const fireworkStateLabel =
     fireworkState === 'launching'
@@ -2511,28 +2468,38 @@ export default function App() {
       : fireworkState === 'resetting'
         ? 'RESETTING / 重置'
         : 'STANDBY / 待机';
-  const fishRevealActive = autoFishActive && visualMode !== 'standby';
+  const fishRevealActive = autoFishActive && fishMode === 'run';
+  const fishRoamActive = autoFishActive && fishMode === 'roam';
+  const shouldUseOverviewFishMarker = isOverview && autoFishActive && (fishMode === 'run' || fishMode === 'roam');
+  const overviewFishMarker = shouldUseOverviewFishMarker && autoFishStage;
+  const autoFishTargetIndex = autoFishActive
+    ? Math.min(autoFishRoute.length - 1, Math.max(1, Math.ceil(THREE.MathUtils.clamp(autoFishProgress, 0, 1) * (autoFishRoute.length - 1))))
+    : -1;
+  const autoFishTargetScreenId = autoFishTargetIndex >= 0 ? autoFishRoute[autoFishTargetIndex]?.screenId : undefined;
   const isAutoScreenFrameVisible = (id: string) => {
-    if (shouldUseOverviewFishMarker) return true;
+    if (fishRoamActive) return true;
     if (!fishRevealActive) return true;
     const revealProgress = getAutoFishScreenRevealProgress(id);
     return revealProgress === null || autoFishProgress >= revealProgress;
   };
 
   const routedAwayFromBaofa =
-    !(isLocalPreview && localPreviewUnlocked) &&
     isKnownScreenId(routeScreenId) &&
     screenRoute &&
     screenRoute.owner !== 'baofa';
 
   if (routedAwayFromBaofa) {
-    const targetUrl = screenRoute.url;
+    const targetUrl = screenRoute.owner === 'external' && screenRoute.url
+      ? getScreenGatewayUrl(routeScreenId)
+      : screenRoute.url;
     const routeLabel =
       screenRoute.owner === 'vj'
         ? 'VJ / 已路由到 VJ'
-        : screenRoute.owner === 'diagnostic'
-          ? 'Diagnostic / 诊断'
-          : 'Off / 关闭';
+        : screenRoute.owner === 'external'
+          ? 'External / 外部页面'
+          : screenRoute.owner === 'diagnostic'
+            ? 'Diagnostic / 诊断'
+            : 'Off / 关闭';
 
     return (
       <div className="fixed inset-0 flex items-center justify-center bg-[#02040a] px-8 text-white">
@@ -2551,7 +2518,7 @@ export default function App() {
               Open routed screen / 打开路由屏
             </a>
           )}
-          {screenPresentation.autoRedirect && targetUrl && screenRoute.owner === 'vj' && (
+          {screenPresentation.autoRedirect && targetUrl && screenRoute.owner !== 'off' && screenRoute.owner !== 'diagnostic' && (
             <div className="text-[9px] font-mono uppercase tracking-widest text-white/35">
               Redirecting automatically / 自动跳转中
             </div>
@@ -2606,7 +2573,7 @@ export default function App() {
               autoFishStage={autoFishStage}
               autoFishProgress={autoFishProgress}
               autoFishRevealActive={fishRevealActive}
-              standbyFishMode={visualMode === 'standby'}
+              fishRoamMode={fishRoamActive}
               isStarted={treeGrowth > 0 || mode === 'interaction'}
               isPaused={false}
             />
@@ -2677,7 +2644,7 @@ export default function App() {
       )}
 
       <AutoStandbyWakeOverlay
-        active={standbyWakeActive && (visualMode === 'tree' || visualMode === 'standby')}
+        active={standbyWakeActive && visualMode === 'tree'}
         wakeKey={standbyWakeKey}
         isOverview={isOverview}
       />
@@ -2707,11 +2674,19 @@ export default function App() {
         )}
       </AnimatePresence>
 
-        {shouldShowMenu && (
         <div className="absolute top-6 left-6 z-[70] pointer-events-auto" onPointerDown={(e) => e.stopPropagation()}>
+          <div
+            className={`inline-flex h-11 w-11 items-center justify-center rounded-full border backdrop-blur-md transition-all duration-500 ${showStatusIconClass}`}
+            title={`Show status: ${showStatus}`}
+            aria-label={`Show status: ${showStatus}`}
+          >
+            <Activity size={18} />
+          </div>
+        {shouldShowMenu && (
+          <>
           <button
             onClick={() => isCameraActive ? stopCamera() : startCamera()}
-            className={`p-3 rounded-full border transition-all duration-500 backdrop-blur-md ${isCameraActive ? 'border-cyan-500/50 bg-cyan-500/10 text-cyan-400' : 'border-white/10 bg-white/5 text-white/40 hover:border-white/20 hover:bg-white/10'}`}
+            className={`ml-3 p-3 rounded-full border transition-all duration-500 backdrop-blur-md ${isCameraActive ? 'border-cyan-500/50 bg-cyan-500/10 text-cyan-400' : 'border-white/10 bg-white/5 text-white/40 hover:border-white/20 hover:bg-white/10'}`}
             title="Camera gesture control"
           >
             {isCameraActive ? <Camera size={18} /> : <CameraOff size={18} />}
@@ -2724,6 +2699,8 @@ export default function App() {
           >
             <MonitorCog size={18} />
           </button>
+          </>
+        )}
 
           {isCameraActive && (
             <motion.div
@@ -2744,7 +2721,7 @@ export default function App() {
             </motion.div>
           )}
         </div>
-        )}
+        </div>
 
       <AutoFishSchool
         active={autoFishActive}
@@ -2752,7 +2729,7 @@ export default function App() {
         screenId={autoFishScreenId}
         isOverview={isOverview}
         route={autoFishRoute}
-        revealFromA1={visualMode !== 'standby'}
+        revealFromA1={fishMode === 'run'}
         singleFish={shouldUseOverviewFishMarker}
       />
       <FireworkPrelude active={visualMode === 'firework' && fireworkControlMode === 'auto'} startedAt={fireworkPreludeStartedAt} screenId={autoFishScreenId} isOverview={isOverview} />
@@ -2810,7 +2787,7 @@ export default function App() {
                   <span className="text-white/30">Mode</span> <span>{visualMode}</span>
                 </div>
                 <div className="px-1 py-2 text-white/50">
-                  <span className="text-white/30">Fish</span> <span>{autoFishActive ? 'running' : 'idle'}</span>
+                  <span className="text-white/30">Fish</span> <span>{fishMode}</span>
                 </div>
               </div>
 
@@ -2820,25 +2797,11 @@ export default function App() {
                     <div>
                       <div className="text-[9px] font-mono uppercase tracking-[0.22em] text-white/55">Screens / 屏幕</div>
                       <div className="mt-1 text-[9px] font-mono uppercase tracking-[0.16em] text-cyan-300/55">
-                        {isLocalPreview && localPreviewUnlocked ? 'Local preview / 本地自由预览' : 'Route viewer / 路由查看'}
+                        Route viewer / 路由查看
                       </div>
                     </div>
                     <Route size={15} className="text-cyan-100/60" />
                   </div>
-                  {isLocalPreview && (
-                    <button
-                      type="button"
-                      className={`flex h-9 w-full items-center justify-between rounded border px-3 text-[9px] font-mono uppercase tracking-[0.16em] transition ${
-                        localPreviewUnlocked
-                          ? 'border-emerald-300/45 bg-emerald-300/12 text-emerald-100'
-                          : 'border-white/10 bg-white/5 text-white/50 hover:border-white/20 hover:text-white/80'
-                      }`}
-                      onClick={() => setLocalPreviewUnlocked((value) => !value)}
-                    >
-                      <span>Local free switch / 本地自由切屏</span>
-                      <span>{localPreviewUnlocked ? 'On / 开' : 'Off / 关'}</span>
-                    </button>
-                  )}
                   <div
                     className="relative rounded border border-white/10 bg-black/25"
                     style={{ aspectRatio: `${STAGE_BOUNDS.width} / ${STAGE_BOUNDS.height}` }}
@@ -2868,43 +2831,21 @@ export default function App() {
                     <div>
                       <div className="text-[9px] font-mono uppercase tracking-[0.22em] text-white/55">Show / 节目</div>
                       <div className="mt-1 text-[9px] font-mono uppercase tracking-[0.16em] text-cyan-300/55">
-                        {visualModeLabel}
+                        {visualMode === 'firework' ? 'Fireworks / 烟花' : 'Tree / 树'}
                       </div>
                     </div>
-                    <div className="grid grid-cols-3 overflow-hidden rounded border border-white/10 bg-black/30" aria-label="Mode switch">
+                    <div className="grid grid-cols-2 overflow-hidden rounded border border-white/10 bg-black/30" aria-label="Mode switch">
                       <button
                         type="button"
                         className={`h-9 px-3 text-[10px] font-mono uppercase tracking-widest transition ${visualMode === 'tree' ? 'bg-cyan-300/15 text-cyan-100' : 'text-white/45 hover:bg-white/5 hover:text-white/80'}`}
-                        onClick={() => {
-                          clearAutoTimeline();
-                          stopStandbyWake();
-                          stopFishRun(false);
-                          setVisualMode('tree');
-                          setTreeControlMode('manual');
-                          setFireworkControlMode('manual');
-                          setFireworkState('standby');
-                          setAutoBlackout(false);
-                          setAutoSceneOpacity(1);
-                          syncToFirebase({ visualMode: 'tree', baofaFishState: 'idle', fireworkState: 'standby' });
-                        }}
+                        onClick={() => setVisualMode('tree')}
                       >
                         Tree
                       </button>
                       <button
                         type="button"
-                        className={`h-9 border-l border-white/10 px-3 text-[10px] font-mono uppercase tracking-widest transition ${visualMode === 'standby' ? 'bg-emerald-300/15 text-emerald-100' : 'text-white/45 hover:bg-white/5 hover:text-white/80'}`}
-                        onClick={startStandbyMode}
-                      >
-                        Standby
-                      </button>
-                      <button
-                        type="button"
                         className={`h-9 border-l border-white/10 px-3 text-[10px] font-mono uppercase tracking-widest transition ${visualMode === 'firework' ? 'bg-fuchsia-300/15 text-fuchsia-100' : 'text-white/45 hover:bg-white/5 hover:text-white/80'}`}
-                        onClick={() => {
-                          stopFishRun(false);
-                          setManualFireworkControl();
-                          syncToFirebase({ visualMode: 'firework', baofaFishState: 'idle', fireworkState: 'standby' });
-                        }}
+                        onClick={() => setVisualMode('firework')}
                       >
                         Fireworks
                       </button>
@@ -2915,10 +2856,10 @@ export default function App() {
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-[9px] font-mono uppercase tracking-[0.18em] text-white/55">Fish module / 鱼群模块</span>
                       <span className={`rounded-full border px-2.5 py-1 text-[9px] font-mono uppercase tracking-[0.16em] ${autoFishActive ? 'border-cyan-300/50 bg-cyan-300/15 text-cyan-100' : 'border-white/10 bg-white/5 text-white/55'}`}>
-                        {autoFishActive ? 'Running / 运行' : 'Idle / 待机'}
+                        {fishMode === 'roam' ? 'Roaming / 漫游' : fishMode === 'run' ? 'Running / 巡游' : 'Idle / 待机'}
                       </span>
                     </div>
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-3 gap-2">
                       <button
                         type="button"
                         className={`h-10 rounded border px-3 text-[10px] font-mono uppercase tracking-widest transition ${!autoFishActive ? 'border-cyan-300/50 bg-cyan-300/15 text-cyan-100' : 'border-white/10 bg-white/5 text-white/45 hover:border-white/20 hover:text-white/80'}`}
@@ -2928,10 +2869,17 @@ export default function App() {
                       </button>
                       <button
                         type="button"
-                        className={`h-10 rounded border px-3 text-[10px] font-mono uppercase tracking-widest transition ${autoFishActive ? 'border-cyan-300/50 bg-cyan-300/15 text-cyan-100' : 'border-white/10 bg-white/5 text-white/45 hover:border-white/20 hover:text-white/80'}`}
-                        onClick={() => startFishRun(true, visualMode === 'standby' ? createWanderFishRoute() : DEFAULT_AUTO_FISH_ROUTE)}
+                        className={`h-10 rounded border px-3 text-[10px] font-mono uppercase tracking-widest transition ${fishMode === 'run' ? 'border-cyan-300/50 bg-cyan-300/15 text-cyan-100' : 'border-white/10 bg-white/5 text-white/45 hover:border-white/20 hover:text-white/80'}`}
+                        onClick={() => startFishRun()}
                       >
-                        Fish Run / 鱼群启动
+                        Fish Run / 定线巡游
+                      </button>
+                      <button
+                        type="button"
+                        className={`h-10 rounded border px-3 text-[10px] font-mono uppercase tracking-widest transition ${fishMode === 'roam' ? 'border-emerald-300/50 bg-emerald-300/15 text-emerald-100' : 'border-white/10 bg-white/5 text-white/45 hover:border-white/20 hover:text-white/80'}`}
+                        onClick={() => startFishRoam()}
+                      >
+                        Fish Roam / 鱼群漫游
                       </button>
                     </div>
                   </div>
@@ -2968,35 +2916,6 @@ export default function App() {
                           }}
                         >
                           Reset tree / 重置树
-                        </button>
-                      </div>
-                    </div>
-                  ) : visualMode === 'standby' ? (
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between gap-3 rounded border border-emerald-300/12 bg-emerald-300/[0.04] px-3 py-2">
-                        <span className="text-[9px] font-mono uppercase tracking-[0.18em] text-white/55">Standby state / 待机状态</span>
-                        <span className={`rounded-full border px-2.5 py-1 text-[9px] font-mono uppercase tracking-[0.16em] ${autoFishActive ? 'border-emerald-300/50 bg-emerald-300/15 text-emerald-100' : 'border-white/10 bg-white/5 text-white/55'}`}>
-                          {autoFishActive ? 'Fish route / 鱼群路径' : 'Idle / 待机'}
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          className="h-10 rounded border border-emerald-300/45 bg-emerald-300/12 px-3 text-[10px] font-mono uppercase tracking-widest text-emerald-100 transition hover:border-emerald-200/70"
-                          onClick={startStandbyMode}
-                        >
-                          Replay / 重播
-                        </button>
-                        <button
-                          type="button"
-                          className="h-10 rounded border border-white/10 bg-white/5 px-3 text-[10px] font-mono uppercase tracking-widest text-white/55 transition hover:border-white/20 hover:text-white/85"
-                          onClick={() => {
-                            stopStandbyWake();
-                            stopFishRun();
-                            setStandbyPromptReady(false);
-                          }}
-                        >
-                          Hold idle / 停留
                         </button>
                       </div>
                     </div>
@@ -3071,15 +2990,11 @@ export default function App() {
               </div>
 
               <div className="mt-3 h-1 rounded-full bg-white/10 overflow-hidden">
-                <div
-                  className="h-full bg-cyan-300 transition-all duration-300"
-                  style={{ width: `${Math.round((visualMode === 'firework' ? intensity : visualMode === 'standby' ? autoFishProgress : treeGrowth) * 100)}%` }}
-                />
+                <div className="h-full bg-cyan-300 transition-all duration-300" style={{ width: `${Math.round((visualMode === 'firework' ? intensity : treeGrowth) * 100)}%` }} />
               </div>
             </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
+        )}
+      </AnimatePresence>
 
       {connectionStatus === 'error' && (
         <div className="absolute bottom-4 right-4 text-[8px] font-mono text-red-500/40 uppercase tracking-widest animate-pulse pointer-events-none">

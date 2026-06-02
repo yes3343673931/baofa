@@ -4,7 +4,16 @@ const controlToken = SHOW_CONTROL_TOKEN;
 const databaseUrl = FIREBASE_DATABASE_URL;
 const showId = SHOW_ID;
 
-export type ScreenOwner = 'vj' | 'baofa' | 'off' | 'diagnostic';
+export function getScreenGatewayUrl(screenId: string) {
+  const url = new URL(SHOW_BACKEND_URL || window.location.origin);
+  url.pathname = `/screen/${encodeURIComponent(screenId)}`;
+  url.search = '';
+  if (showId && showId !== 'show-main') url.searchParams.set('room', showId);
+  url.hash = '';
+  return url.toString().replace(/\/$/, '');
+}
+
+export type ScreenOwner = 'vj' | 'baofa' | 'off' | 'diagnostic' | 'external';
 
 export type ScreenRoute = {
   screenId: string;
@@ -17,6 +26,7 @@ export type ScreenRoute = {
 
 export type ScreenPresentation = {
   autoRedirect: boolean;
+  cameraEnabled: boolean;
   showDebug: boolean;
   showMenu: boolean;
 };
@@ -32,6 +42,7 @@ export type ClientPresence = {
 export async function fetchScreenState(signal?: AbortSignal): Promise<{
   routes: Record<string, ScreenRoute>;
   presentation: ScreenPresentation;
+  showStatus: 'standby' | 'running' | 'paused' | 'ended';
   clients: Record<string, ClientPresence>;
 }> {
   if (!controlToken.trim()) throw new Error('Control token is required');
@@ -68,11 +79,17 @@ function normalizeScreenState(state: any, clients: Record<string, ClientPresence
     routes: state?.modules?.interaction?.screenRoutes || {},
     presentation: {
       autoRedirect: typeof presentation.autoRedirect === 'boolean' ? presentation.autoRedirect : true,
+      cameraEnabled: typeof presentation.cameraEnabled === 'boolean' ? presentation.cameraEnabled : false,
       showDebug: typeof presentation.showDebug === 'boolean' ? presentation.showDebug : true,
       showMenu: typeof presentation.showMenu === 'boolean' ? presentation.showMenu : true,
     },
+    showStatus: normalizeShowStatus(state?.show?.status),
     clients,
   };
+}
+
+function normalizeShowStatus(value: unknown): 'standby' | 'running' | 'paused' | 'ended' {
+  return value === 'running' || value === 'paused' || value === 'ended' ? value : 'standby';
 }
 
 function shouldReadFirebaseState() {
