@@ -970,6 +970,7 @@ export default function App() {
     getAudioData,
   } = useAudio();
   const { isHandOpen, openHandCount, hasHandDetected, isCameraActive, cameraError, startCamera, stopCamera } = useHandTracking();
+  const cameraControlRef = useRef({ isCameraActive, startCamera, stopCamera });
   const [audioData, setAudioData] = useState(new Float32Array(1024));
   const [interactionPoint, setInteractionPoint] = useState<THREE.Vector3 | null>(null);
   const [fireworkScratchPoint, setFireworkScratchPoint] = useState<THREE.Vector3 | null>(null);
@@ -1010,9 +1011,11 @@ export default function App() {
   const [screenRoutes, setScreenRoutes] = useState<Record<string, ScreenRoute>>({});
   const [screenPresentation, setScreenPresentation] = useState<ScreenPresentation>({
     autoRedirect: true,
+    cameraEnabled: false,
     showDebug: true,
     showMenu: true,
   });
+  const [showStatus, setShowStatus] = useState<'standby' | 'running' | 'paused' | 'ended'>('standby');
   const [screenRouteError, setScreenRouteError] = useState('');
   const intensityRef = useRef(0.08);
   const lastClickTimeRef = useRef(0);
@@ -1050,12 +1053,26 @@ export default function App() {
     showControlClientIdRef.current = createShowControlClientId(screenId);
   }
   const showControlCommandRef = useRef<(command: ControlCommand) => void>(() => undefined);
+  useEffect(() => {
+    cameraControlRef.current = { isCameraActive, startCamera, stopCamera };
+  }, [isCameraActive, startCamera, stopCamera]);
+
+  useEffect(() => {
+    const cameraControl = cameraControlRef.current;
+    if (screenPresentation.cameraEnabled && !cameraControl.isCameraActive) {
+      void cameraControl.startCamera();
+    } else if (!screenPresentation.cameraEnabled && cameraControl.isCameraActive) {
+      cameraControl.stopCamera();
+    }
+  }, [screenPresentation.cameraEnabled]);
+
   const refreshScreenState = useCallback(async (signal?: AbortSignal) => {
     try {
-      const { routes, presentation } = await fetchScreenState(signal);
+      const { routes, presentation, showStatus: nextShowStatus } = await fetchScreenState(signal);
       setScreenRoutes(routes);
       setScreenRoute(isKnownScreenId(routeScreenId) ? routes[routeScreenId] || null : null);
       setScreenPresentation(presentation);
+      setShowStatus(nextShowStatus);
       setScreenRouteError('');
     } catch (error) {
       if (signal?.aborted) return;
@@ -2300,6 +2317,14 @@ export default function App() {
         ...prev,
         showMenu: typeof value === 'boolean' ? value : Boolean(value),
       }));
+    } else if (command.command === 'setScreenCameraEnabled') {
+      const enabled = typeof value === 'boolean' ? value : Boolean(value);
+      setScreenPresentation((prev) => ({
+        ...prev,
+        cameraEnabled: enabled,
+      }));
+      if (enabled) void startCamera();
+      else stopCamera();
     } else if (command.command === 'setScreenDebugVisible') {
       setScreenPresentation((prev) => ({
         ...prev,
@@ -2309,6 +2334,7 @@ export default function App() {
       const presentation = value as Partial<ScreenPresentation>;
       setScreenPresentation((prev) => ({
         autoRedirect: typeof presentation.autoRedirect === 'boolean' ? presentation.autoRedirect : prev.autoRedirect,
+        cameraEnabled: typeof presentation.cameraEnabled === 'boolean' ? presentation.cameraEnabled : prev.cameraEnabled,
         showDebug: typeof presentation.showDebug === 'boolean' ? presentation.showDebug : prev.showDebug,
         showMenu: typeof presentation.showMenu === 'boolean' ? presentation.showMenu : prev.showMenu,
       }));
@@ -2345,8 +2371,10 @@ export default function App() {
     setManualFireworkControl,
     setTreeControlMode,
     setVisualMode,
+    startCamera,
     startAutoFireworkShow,
     startFishRun,
+    stopCamera,
     stopAllLayers,
     stopFishRun,
     syncToFirebase
@@ -2425,6 +2453,10 @@ export default function App() {
   const handGestureActive = isCameraActive && hasHandDetected && isHandOpen && openHandCount > 0;
   const shouldShowMenu = screenPresentation.showMenu;
   const debugEnabled = screenPresentation.showDebug;
+  const showStatusIconClass = `border-white/10 bg-white/5 text-white/45 ${
+    showStatus === 'running' ? 'border-emerald-300/50 bg-emerald-300/12 text-emerald-100' :
+      showStatus === 'paused' ? 'border-amber-300/50 bg-amber-300/12 text-amber-100' : ''
+  }`;
   const autoFishScreenId = isOverview ? 'OVERVIEW' : screenId;
   const focusedScreenId = isOverview ? 'OVERVIEW' : screenId;
   const autoFishStage = autoFishActive ? getFishStagePosition(autoFishProgress, autoFishRoute) : null;
@@ -2638,11 +2670,19 @@ export default function App() {
         )}
       </AnimatePresence>
 
-        {shouldShowMenu && (
         <div className="absolute top-6 left-6 z-[70] pointer-events-auto" onPointerDown={(e) => e.stopPropagation()}>
+          <div
+            className={`inline-flex h-11 w-11 items-center justify-center rounded-full border backdrop-blur-md transition-all duration-500 ${showStatusIconClass}`}
+            title={`Show status: ${showStatus}`}
+            aria-label={`Show status: ${showStatus}`}
+          >
+            <Activity size={18} />
+          </div>
+        {shouldShowMenu && (
+          <>
           <button
             onClick={() => isCameraActive ? stopCamera() : startCamera()}
-            className={`p-3 rounded-full border transition-all duration-500 backdrop-blur-md ${isCameraActive ? 'border-cyan-500/50 bg-cyan-500/10 text-cyan-400' : 'border-white/10 bg-white/5 text-white/40 hover:border-white/20 hover:bg-white/10'}`}
+            className={`ml-3 p-3 rounded-full border transition-all duration-500 backdrop-blur-md ${isCameraActive ? 'border-cyan-500/50 bg-cyan-500/10 text-cyan-400' : 'border-white/10 bg-white/5 text-white/40 hover:border-white/20 hover:bg-white/10'}`}
             title="Camera gesture control"
           >
             {isCameraActive ? <Camera size={18} /> : <CameraOff size={18} />}
@@ -2655,6 +2695,8 @@ export default function App() {
           >
             <MonitorCog size={18} />
           </button>
+          </>
+        )}
 
           {isCameraActive && (
             <motion.div
@@ -2675,7 +2717,7 @@ export default function App() {
             </motion.div>
           )}
         </div>
-        )}
+        </div>
 
       <AutoFishSchool
         active={autoFishActive}
@@ -2947,9 +2989,8 @@ export default function App() {
                 <div className="h-full bg-cyan-300 transition-all duration-300" style={{ width: `${Math.round((visualMode === 'firework' ? intensity : treeGrowth) * 100)}%` }} />
               </div>
             </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
+        )}
+      </AnimatePresence>
 
       {connectionStatus === 'error' && (
         <div className="absolute bottom-4 right-4 text-[8px] font-mono text-red-500/40 uppercase tracking-widest animate-pulse pointer-events-none">
