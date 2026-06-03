@@ -21,6 +21,7 @@ interface ParticleSceneProps {
   autoFishStage?: { col: number; row: number; angle: number } | null;
   autoFishProgress?: number;
   autoFishRevealActive?: boolean;
+  fishRoamMode?: boolean;
   isStarted?: boolean;
   isPaused?: boolean;
 }
@@ -83,6 +84,7 @@ export const ParticleScene: React.FC<ParticleSceneProps> = ({
   autoFishStage,
   autoFishProgress = 0,
   autoFishRevealActive = false,
+  fishRoamMode = false,
   isStarted,
   isPaused
 }) => {
@@ -726,6 +728,8 @@ export const ParticleScene: React.FC<ParticleSceneProps> = ({
 
     addScreenBranch('C1', -1, 5.6, isWideMasterScreen ? 24 : 16);
     addScreenBranch('C2', -1, 4.2, isWideMasterScreen ? 22 : 14);
+    addScreenBranch('C3', 1, 4.2, isWideMasterScreen ? 22 : 14);
+    addScreenBranch('C4', 1, 5.6, isWideMasterScreen ? 24 : 16);
     addScreenBranch('L1', -1, 1.2, isWideMasterScreen ? 22 : 14);
     addScreenBranch('L2', -1, -1.2, isWideMasterScreen ? 20 : 12);
     addScreenBranch('R1', 1, 1.2, isWideMasterScreen ? 22 : 14);
@@ -1168,7 +1172,7 @@ export const ParticleScene: React.FC<ParticleSceneProps> = ({
           revealProgress !== null &&
           autoFishProgress < revealProgress + 0.035;
 
-        if (screenPendingFishReveal || screenCrossedByFish) {
+        if (!fishRoamMode && (screenPendingFishReveal || screenCrossedByFish)) {
           squareMatrixObject.scale.setScalar(0.0001);
           squareMatrixObject.updateMatrix();
           mesh.setMatrixAt(i, squareMatrixObject.matrix);
@@ -1176,6 +1180,10 @@ export const ParticleScene: React.FC<ParticleSceneProps> = ({
         }
         let pulse = 0;
         let fishDim = 0;
+        let fishScatterX = 0;
+        let fishScatterY = 0;
+        let fishScatterZ = 0;
+        let fishScatterSpin = 0;
 
         if (mode === 'interaction' && visibleGrowth <= 0.001 && sourceLayout) {
           const distance = Math.abs(data.screen.col - sourceLayout.col) + Math.abs(data.screen.row - sourceLayout.row);
@@ -1188,7 +1196,15 @@ export const ParticleScene: React.FC<ParticleSceneProps> = ({
           const dy = data.position.y - fishPoint.y;
           const dist = Math.max(0.001, Math.hypot(dx, dy));
           const wake = Math.max(0, 1 - dist / (isOverviewScreen ? 7 : 8));
-          fishDim = wake * fishImpactPresence * 0.6;
+          fishDim = wake * fishImpactPresence * (fishRoamMode ? 0.9 : 0.6);
+          if (wake > 0) {
+            const side = Math.sin(time * 3.4 + i * 0.31);
+            const force = wake * wake * fishImpactPresence * (fishRoamMode ? (isOverviewScreen ? 9.2 : 11.5) : 3.2);
+            fishScatterX = (dx / dist) * force + (-dy / dist) * side * force * 0.44;
+            fishScatterY = (dy / dist) * force + (dx / dist) * side * force * 0.44;
+            fishScatterZ = force * (0.75 + Math.sin(time * 2.2 + i) * 0.35);
+            fishScatterSpin = force * 0.55;
+          }
         }
 
         const freePower = 0.75 + intensity * 1.4 + pulse * 1.15;
@@ -1196,14 +1212,14 @@ export const ParticleScene: React.FC<ParticleSceneProps> = ({
         const lift = Math.cos(time * (data.speed * 0.82) + data.phase * 1.37);
         const float = Math.sin(time * (data.speed * 0.56) + data.phase * 0.71);
         squareMatrixObject.position.set(
-          data.position.x + sway * data.drift.x * freePower + Math.sin(time * 0.24 + i * 0.19) * data.drift.x * 0.55,
-          data.position.y + lift * data.drift.y * freePower + Math.cos(time * 0.2 + i * 0.23) * data.drift.y * 0.42,
-          data.position.z + float * data.drift.z * freePower
+          data.position.x + sway * data.drift.x * freePower + Math.sin(time * 0.24 + i * 0.19) * data.drift.x * 0.55 + fishScatterX,
+          data.position.y + lift * data.drift.y * freePower + Math.cos(time * 0.2 + i * 0.23) * data.drift.y * 0.42 + fishScatterY,
+          data.position.z + float * data.drift.z * freePower + fishScatterZ
         );
         squareMatrixObject.rotation.set(
           0,
           0,
-          data.rotation.z + time * (0.65 + data.speed * 0.45 + pulse * 1.1) + Math.cos(time * 1.2 + i) * 0.18
+          data.rotation.z + time * (0.65 + data.speed * 0.45 + pulse * 1.1) + Math.cos(time * 1.2 + i) * 0.18 + fishScatterSpin
         );
         squareMatrixObject.scale.setScalar(data.scale * (1.08 + intensity * 0.34 + bloomPhase * 0.22 + pulse * 1.25) * (1 - fishDim));
         squareMatrixObject.updateMatrix();
@@ -1235,17 +1251,37 @@ export const ParticleScene: React.FC<ParticleSceneProps> = ({
       idleBlockData.forEach((data) => {
         if (data.colorGroup !== groupIndex) return;
         const pulse = 0.9 + Math.sin(time * (1.15 + data.speed) + data.phase) * 0.22 + interactionBoost * 0.14;
+        let fishScatterX = 0;
+        let fishScatterY = 0;
+        let fishScatterZ = 0;
+        let fishScatterSpin = 0;
+        let fishSquash = 1;
+        if (fishPoint && fishImpactPresence > 0.02) {
+          const dx = data.position.x - fishPoint.x;
+          const dy = data.position.y - fishPoint.y;
+          const dist = Math.max(0.001, Math.hypot(dx, dy));
+          const wake = Math.max(0, 1 - dist / (isOverviewScreen ? 8.4 : 9.4));
+          if (wake > 0) {
+            const swirl = Math.sin(time * 3 + data.phase + groupIndex);
+            const force = wake * wake * fishImpactPresence * (fishRoamMode ? (isOverviewScreen ? 7.8 : 10.2) : 2.8);
+            fishScatterX = (dx / dist) * force + (-dy / dist) * swirl * force * 0.42;
+            fishScatterY = (dy / dist) * force + (dx / dist) * swirl * force * 0.42;
+            fishScatterZ = force * (1.1 + Math.cos(time * 2.4 + data.phase) * 0.4);
+            fishScatterSpin = force * 0.8;
+            fishSquash = Math.max(0.12, 1 - wake * fishImpactPresence * (fishRoamMode ? 0.78 : 0.42));
+          }
+        }
         squareMatrixObject.position.set(
-          data.position.x + Math.sin(time * data.speed + data.phase) * data.drift.x,
-          data.position.y + Math.cos(time * data.speed * 0.74 + data.phase) * data.drift.y,
-          data.position.z + Math.sin(time * data.speed * 0.52 + data.phase * 1.4) * data.drift.z
+          data.position.x + Math.sin(time * data.speed + data.phase) * data.drift.x + fishScatterX,
+          data.position.y + Math.cos(time * data.speed * 0.74 + data.phase) * data.drift.y + fishScatterY,
+          data.position.z + Math.sin(time * data.speed * 0.52 + data.phase * 1.4) * data.drift.z + fishScatterZ
         );
         squareMatrixObject.rotation.set(
-          data.rotation.x + time * data.speed * data.spin.x + Math.sin(time * 0.71 + data.phase) * 0.55,
-          data.rotation.y + time * data.speed * data.spin.y + Math.cos(time * 0.63 + data.phase * 1.2) * 0.5,
-          data.rotation.z + time * data.speed * data.spin.z + Math.sin(time * 0.83 + data.phase * 0.7) * 0.65
+          data.rotation.x + time * data.speed * data.spin.x + Math.sin(time * 0.71 + data.phase) * 0.55 + fishScatterSpin * 0.4,
+          data.rotation.y + time * data.speed * data.spin.y + Math.cos(time * 0.63 + data.phase * 1.2) * 0.5 + fishScatterSpin * 0.3,
+          data.rotation.z + time * data.speed * data.spin.z + Math.sin(time * 0.83 + data.phase * 0.7) * 0.65 + fishScatterSpin
         );
-        squareMatrixObject.scale.setScalar(data.scale * pulse * (isOverviewScreen ? 0.62 : 0.82));
+        squareMatrixObject.scale.setScalar(data.scale * pulse * (isOverviewScreen ? 0.62 : 0.82) * fishSquash);
         squareMatrixObject.updateMatrix();
         mesh.setMatrixAt(instanceIndex, squareMatrixObject.matrix);
         instanceIndex++;
