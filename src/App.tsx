@@ -11,7 +11,7 @@ import { db, handleFirestoreError, isFirebaseConfigured, OperationType } from '.
 import { createShowControlClient, type ControlCommand } from './lib/showControlClient';
 import { APP_PORT } from './lib/runtimeConfig';
 import { ShowRuntimeSettingsPanel } from './components/ShowRuntimeSettingsPanel';
-import { fetchScreenState, getScreenGatewayUrl, subscribeScreenState, type ScreenPresentation, type ScreenRoute } from './lib/screenRoutes';
+import { fetchScreenState, subscribeScreenState, type ScreenPresentation, type ScreenRoute } from './lib/screenRoutes';
 import { doc, getDocFromServer, onSnapshot, setDoc } from 'firebase/firestore';
 import { Activity, Camera, CameraOff, ExternalLink, LayoutGrid, MonitorCog, Route, Sparkles } from 'lucide-react';
 import {
@@ -1626,8 +1626,7 @@ export default function App() {
     if (!isKnownScreenId(routeScreenId)) return;
     if (!screenRoute || screenRoute.owner === 'baofa' || !screenPresentation.autoRedirect) return;
     if (screenRoute.url && screenRoute.owner !== 'off' && screenRoute.owner !== 'diagnostic') {
-      const targetUrl = screenRoute.owner === 'external' ? getScreenGatewayUrl(routeScreenId) : screenRoute.url;
-      window.location.replace(targetUrl);
+      window.location.replace(screenRoute.url);
     }
   }, [routeScreenId, screenPresentation.autoRedirect, screenRoute]);
 
@@ -2489,15 +2488,11 @@ export default function App() {
     screenRoute.owner !== 'baofa';
 
   if (routedAwayFromBaofa) {
-    const targetUrl = screenRoute.owner === 'external' && screenRoute.url
-      ? getScreenGatewayUrl(routeScreenId)
-      : screenRoute.url;
+    const targetUrl = screenRoute.url;
     const routeLabel =
       screenRoute.owner === 'vj'
         ? 'VJ / 已路由到 VJ'
-        : screenRoute.owner === 'external'
-          ? 'External / 外部页面'
-          : screenRoute.owner === 'diagnostic'
+        : screenRoute.owner === 'diagnostic'
             ? 'Diagnostic / 诊断'
             : 'Off / 关闭';
 
