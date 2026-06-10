@@ -57,6 +57,7 @@ export function useHandTracking() {
   const frameRef = useRef<number | null>(null);
 
   const isCameraActiveRef = useRef(false);
+  const startRequestRef = useRef(0);
   const presenceConfidenceRef = useRef(0);
   const openConfidenceRef = useRef(0);
   const lastOpenHandCountRef = useRef(0);
@@ -136,6 +137,8 @@ export function useHandTracking() {
 
   const startCamera = async () => {
     if (!videoRef.current || !handsRef.current) return;
+    const requestId = startRequestRef.current + 1;
+    startRequestRef.current = requestId;
 
     try {
       setCameraError(null);
@@ -154,8 +157,13 @@ export function useHandTracking() {
       streamRef.current = stream;
       videoRef.current.srcObject = stream;
       await videoRef.current.play();
+      if (requestId !== startRequestRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       isCameraActiveRef.current = true;
       setIsCameraActive(true);
+      setCameraError(null);
 
       const processFrame = async () => {
         const video = videoRef.current;
@@ -177,6 +185,7 @@ export function useHandTracking() {
       frameRef.current = requestAnimationFrame(processFrame);
     } catch (err) {
       console.error("Camera start failed:", err);
+      if (requestId !== startRequestRef.current || isCameraActiveRef.current) return;
       const message = err instanceof DOMException && err.name === 'NotAllowedError'
         ? 'Camera permission denied / 摄像头权限被拒绝'
         : 'Camera unavailable / 摄像头不可用';
@@ -187,6 +196,7 @@ export function useHandTracking() {
   };
 
   const stopCamera = () => {
+    startRequestRef.current += 1;
     isCameraActiveRef.current = false;
     if (frameRef.current) cancelAnimationFrame(frameRef.current);
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -199,6 +209,7 @@ export function useHandTracking() {
     setIsHandOpen(false);
     setHasHandDetected(false);
     setOpenHandCount(0);
+    setCameraError(null);
   };
 
   return { isHandOpen, openHandCount, hasHandDetected, isCameraActive, cameraError, startCamera, stopCamera };
