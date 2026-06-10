@@ -11,7 +11,7 @@ import { db, handleFirestoreError, isFirebaseConfigured, OperationType } from '.
 import { createShowControlClient, type ControlCommand } from './lib/showControlClient';
 import { APP_PORT } from './lib/runtimeConfig';
 import { ShowRuntimeSettingsPanel } from './components/ShowRuntimeSettingsPanel';
-import { fetchScreenState, getScreenGatewayUrl, subscribeScreenState, type ScreenPresentation, type ScreenRoute } from './lib/screenRoutes';
+import { fetchScreenState, subscribeScreenState, type ScreenPresentation, type ScreenRoute } from './lib/screenRoutes';
 import { doc, getDocFromServer, onSnapshot, setDoc } from 'firebase/firestore';
 import { Activity, Camera, CameraOff, ExternalLink, LayoutGrid, MonitorCog, Route, Sparkles } from 'lucide-react';
 import {
@@ -993,8 +993,6 @@ export default function App() {
   const [autoFishRoute, setAutoFishRoute] = useState<FishRoutePoint[]>(DEFAULT_AUTO_FISH_ROUTE);
   const [fishMode, setFishMode] = useState<FishMode>('idle');
   const [fireworkPreludeStartedAt, setFireworkPreludeStartedAt] = useState<number | null>(null);
-  const [showScreenPanel, setShowScreenPanel] = useState(() => isLocalPreview);
-  const [webglDebugOpen, setWebglDebugOpen] = useState(false);
   const [treeGrowth, setTreeGrowth] = useState(0);
   const [gestureActive, setGestureActive] = useState(false);
   const [treeTriggered, setTreeTriggered] = useState(false);
@@ -1228,8 +1226,8 @@ export default function App() {
         const source = isKnownScreenId(data.screenPulse.source) ? data.screenPulse.source : DEFAULT_SCREEN_ID;
         setScreenPulse({ source, timestamp: data.screenPulse.timestamp });
       }
-      if (data.baofaFishState === 'running') {
-        const nextFishMode: FishMode = data.baofaFishMode === 'roam' ? 'roam' : 'run';
+      if (data.baofaFishState === 'running' || data.baofaFishState === 'roam') {
+        const nextFishMode: FishMode = data.baofaFishState === 'roam' || data.baofaFishMode === 'roam' ? 'roam' : 'run';
         if (Array.isArray(data.baofaFishRoute)) {
           const nextRoute = data.baofaFishRoute
             .filter((point: any) => typeof point?.col === 'number' && typeof point?.row === 'number')
@@ -1288,7 +1286,7 @@ export default function App() {
     setAutoFishProgress(0);
     setAutoFishActive(true);
     if (publish) {
-      syncToFirebase({ baofaFishState: 'running', baofaFishMode: mode, baofaFishRoute: route });
+      syncToFirebase({ baofaFishState: mode === 'roam' ? 'roam' : 'running', baofaFishMode: mode, baofaFishRoute: route });
     }
   }, [syncToFirebase]);
 
@@ -1522,7 +1520,7 @@ export default function App() {
           setAutoFishRoute(route);
           setAutoFishProgress(0);
           setAutoFishActive(true);
-          syncToFirebase({ baofaFishState: 'running', baofaFishMode: 'roam', baofaFishRoute: route });
+          syncToFirebase({ baofaFishState: 'roam', baofaFishMode: 'roam', baofaFishRoute: route });
         } else {
           autoFishStartedAtRef.current = null;
           setAutoFishActive(false);
@@ -1626,8 +1624,7 @@ export default function App() {
     if (!isKnownScreenId(routeScreenId)) return;
     if (!screenRoute || screenRoute.owner === 'baofa' || !screenPresentation.autoRedirect) return;
     if (screenRoute.url && screenRoute.owner !== 'off' && screenRoute.owner !== 'diagnostic') {
-      const targetUrl = screenRoute.owner === 'external' ? getScreenGatewayUrl(routeScreenId) : screenRoute.url;
-      window.location.replace(targetUrl);
+      window.location.replace(screenRoute.url);
     }
   }, [routeScreenId, screenPresentation.autoRedirect, screenRoute]);
 
@@ -1709,6 +1706,55 @@ export default function App() {
     }
   };
 
+  const setTreeStandby = () => {
+    clearAutoTimeline();
+    stopStandbyWake();
+    setTreeControlMode('manual');
+    setAutoBlackout(false);
+    setAutoSceneOpacity(1);
+    if (gestureStartTimeoutRef.current) {
+      window.clearTimeout(gestureStartTimeoutRef.current);
+      gestureStartTimeoutRef.current = null;
+    }
+    gestureProgressRef.current = 0;
+    gestureCompletedRef.current = false;
+    gestureRoundLockedRef.current = false;
+    gestureNeedsReleaseRef.current = false;
+    gestureInputArmedRef.current = false;
+    treeGrowthRef.current = 0;
+    treeTriggeredRef.current = false;
+    treeCompletedAtRef.current = null;
+    treeBrightAtRef.current = null;
+    treeFadingRef.current = false;
+    treePhaseRef.current = 'idle';
+    treeControllerRef.current = false;
+    intensityRef.current = 0.08;
+    evolutionRef.current = 0;
+    setTreeGrowth(0);
+    setTreeTriggered(false);
+    setGestureActive(false);
+    setGestureProgress(0);
+    setShowGestureProgress(false);
+    setGestureStartPending(false);
+    setGestureRoundLocked(false);
+    setStandbyPromptReady(true);
+    setIntensity(0.08);
+    setMusicEvolution(0);
+    stopAllLayers();
+    treeIdleAudioStoppedRef.current = true;
+    setMode('idle');
+    setVisualMode('tree');
+    syncToFirebase({
+      treeGrowth: 0,
+      treePhase: 'idle',
+      gestureActive: false,
+      intensity: 0.08,
+      evolution: 0,
+      mode: 'idle',
+      visualMode: 'tree',
+    });
+  };
+
   const applyEffectMode = (nextMode: 'idle' | 'interaction' | 'flow' | 'climax', nextIntensity: number) => {
     const clampedIntensity = Math.max(0, Math.min(1, nextIntensity));
     intensityRef.current = clampedIntensity;
@@ -1723,6 +1769,11 @@ export default function App() {
       setTreeGrowth(treeGrowthRef.current);
     } else {
       treeIdleAudioStoppedRef.current = true;
+      treeTriggeredRef.current = true;
+      treePhaseRef.current = 'idle';
+      treeGrowthRef.current = Math.max(treeGrowthRef.current, 0.12);
+      setTreeTriggered(true);
+      setTreeGrowth(treeGrowthRef.current);
       stopAllLayers();
     }
     syncToFirebase({
@@ -2222,7 +2273,7 @@ export default function App() {
   const applyShowControlCommand = useCallback((command: ControlCommand) => {
     if (command.module && command.module !== 'interaction' && command.module !== 'show') return;
     const value = command.value;
-    const targetedCommand = ['setMode', 'setInteractionMode', 'setIntensity', 'resetTree', 'pulseScreen'].includes(command.command);
+    const targetedCommand = ['setMode', 'setInteractionMode', 'setIntensity', 'resetTree', 'setTreeStandby', 'pulseScreen'].includes(command.command);
     if (targetedCommand && !commandTargetsScreen(command.target, screenId, showControlClientIdRef.current)) return;
 
     if ((command.command === 'setMode' || command.command === 'setInteractionMode') && typeof value === 'string') {
@@ -2245,6 +2296,10 @@ export default function App() {
       syncToFirebase({ intensity: next });
     } else if (command.command === 'resetTree') {
       resetTreeGrowth(false);
+      stopFishRun(false);
+      syncToFirebase({ baofaFishState: 'idle', baofaFishMode: 'idle', baofaFishRoute: null });
+    } else if (command.command === 'setTreeStandby') {
+      setTreeStandby();
     } else if (command.command === 'setVisualMode' && typeof value === 'string') {
       if (value === 'tree' || value === 'firework') {
         clearAutoTimeline();
@@ -2295,7 +2350,7 @@ export default function App() {
       } else if (value === 'roam') {
         const route = createRoamFishRoute();
         startFishRun(false, route, 'roam');
-        syncToFirebase({ baofaFishState: 'running', baofaFishMode: 'roam', baofaFishRoute: route });
+        syncToFirebase({ baofaFishState: 'roam', baofaFishMode: 'roam', baofaFishRoute: route });
       } else {
         stopFishRun(false);
         syncToFirebase({ baofaFishState: 'idle', baofaFishMode: 'idle', baofaFishRoute: null });
@@ -2369,6 +2424,7 @@ export default function App() {
     setMode,
     setMusicEvolution,
     setManualFireworkControl,
+    setTreeStandby,
     setTreeControlMode,
     setVisualMode,
     startCamera,
@@ -2422,7 +2478,7 @@ export default function App() {
       firebaseStatus: connectionStatus,
       visualMode,
       fireworkState,
-      baofaFishState: autoFishActive ? 'running' : 'idle',
+      baofaFishState: autoFishActive ? (fishMode === 'roam' ? 'roam' : 'running') : 'idle',
       baofaFishMode: fishMode,
       baofaFishRoute: autoFishActive ? autoFishRoute : null,
     });
@@ -2451,12 +2507,16 @@ export default function App() {
   ]);
 
   const handGestureActive = isCameraActive && hasHandDetected && isHandOpen && openHandCount > 0;
-  const shouldShowMenu = screenPresentation.showMenu;
   const debugEnabled = screenPresentation.showDebug;
-  const showStatusIconClass = `border-white/10 bg-white/5 text-white/45 ${
-    showStatus === 'running' ? 'border-emerald-300/50 bg-emerald-300/12 text-emerald-100' :
-      showStatus === 'paused' ? 'border-amber-300/50 bg-amber-300/12 text-amber-100' : ''
-  }`;
+  const showStatusIconClass = debugEnabled
+    ? 'border-amber-300/55 bg-amber-300/14 text-amber-100 shadow-[0_0_20px_rgba(252,211,77,0.22)]'
+    : `border-white/10 bg-white/5 text-white/45 ${
+      showStatus === 'running' ? 'border-emerald-300/50 bg-emerald-300/12 text-emerald-100' :
+        showStatus === 'paused' ? 'border-amber-300/50 bg-amber-300/12 text-amber-100' : ''
+    }`;
+  const showStatusTitle = debugEnabled
+    ? `Debug visible from 4300 / 4300 已打开调试 - show status: ${showStatus}`
+    : `Show status: ${showStatus}`;
   const autoFishScreenId = isOverview ? 'OVERVIEW' : screenId;
   const focusedScreenId = isOverview ? 'OVERVIEW' : screenId;
   const autoFishStage = autoFishActive ? getFishStagePosition(autoFishProgress, autoFishRoute) : null;
@@ -2489,15 +2549,11 @@ export default function App() {
     screenRoute.owner !== 'baofa';
 
   if (routedAwayFromBaofa) {
-    const targetUrl = screenRoute.owner === 'external' && screenRoute.url
-      ? getScreenGatewayUrl(routeScreenId)
-      : screenRoute.url;
+    const targetUrl = screenRoute.url;
     const routeLabel =
       screenRoute.owner === 'vj'
         ? 'VJ / 已路由到 VJ'
-        : screenRoute.owner === 'external'
-          ? 'External / 外部页面'
-          : screenRoute.owner === 'diagnostic'
+        : screenRoute.owner === 'diagnostic'
             ? 'Diagnostic / 诊断'
             : 'Off / 关闭';
 
@@ -2675,32 +2731,30 @@ export default function App() {
       </AnimatePresence>
 
         <div className="absolute top-6 left-6 z-[70] pointer-events-auto" onPointerDown={(e) => e.stopPropagation()}>
-          <div
-            className={`inline-flex h-11 w-11 items-center justify-center rounded-full border backdrop-blur-md transition-all duration-500 ${showStatusIconClass}`}
-            title={`Show status: ${showStatus}`}
-            aria-label={`Show status: ${showStatus}`}
-          >
-            <Activity size={18} />
-          </div>
-        {shouldShowMenu && (
-          <>
           <button
             onClick={() => isCameraActive ? stopCamera() : startCamera()}
-            className={`ml-3 p-3 rounded-full border transition-all duration-500 backdrop-blur-md ${isCameraActive ? 'border-cyan-500/50 bg-cyan-500/10 text-cyan-400' : 'border-white/10 bg-white/5 text-white/40 hover:border-white/20 hover:bg-white/10'}`}
+            className={`p-3 rounded-full border transition-all duration-500 backdrop-blur-md ${isCameraActive ? 'border-cyan-500/50 bg-cyan-500/10 text-cyan-400' : 'border-white/10 bg-white/5 text-white/40 hover:border-white/20 hover:bg-white/10'}`}
             title="Camera gesture control"
           >
             {isCameraActive ? <Camera size={18} /> : <CameraOff size={18} />}
           </button>
           <button
-            onClick={() => setShowScreenPanel((value) => !value)}
-            className={`ml-3 p-3 rounded-full border transition-all duration-500 backdrop-blur-md ${showScreenPanel ? 'border-cyan-300/45 bg-cyan-300/12 text-cyan-100' : 'border-white/10 bg-white/5 text-white/50 hover:border-white/20 hover:bg-white/10'}`}
-            title="Debug menu"
-            aria-pressed={showScreenPanel}
+            onClick={() => setScreenPresentation((prev) => ({ ...prev, showMenu: !prev.showMenu }))}
+            className={`ml-3 p-3 rounded-full border transition-all duration-500 backdrop-blur-md ${screenPresentation.showMenu ? 'border-cyan-300/45 bg-cyan-300/12 text-cyan-100' : 'border-white/10 bg-white/5 text-white/50 hover:border-white/20 hover:bg-white/10'}`}
+            title="Menu / 菜单"
+            aria-pressed={screenPresentation.showMenu}
           >
             <MonitorCog size={18} />
           </button>
-          </>
-        )}
+          <button
+            onClick={() => setScreenPresentation((prev) => ({ ...prev, showDebug: !prev.showDebug }))}
+            className={`ml-3 p-3 rounded-full border transition-all duration-500 backdrop-blur-md ${showStatusIconClass}`}
+            title={showStatusTitle}
+            aria-label={showStatusTitle}
+            aria-pressed={debugEnabled}
+          >
+            <Activity size={18} />
+          </button>
 
           {isCameraActive && (
             <motion.div
@@ -2711,7 +2765,7 @@ export default function App() {
               System / 系统: {hasHandDetected ? (openHandCount > 0 ? `Palm open x${openHandCount} / 手掌展开 ${openHandCount}` : 'Closed / 暂停') : 'Searching hand / 搜索手部'}
             </motion.div>
           )}
-          {cameraError && (
+          {cameraError && !isCameraActive && (
             <motion.div
               initial={{ opacity: 0, x: -10 }}
               animate={{ opacity: 1, x: 0 }}
@@ -2744,7 +2798,7 @@ export default function App() {
       )}
 
         <AnimatePresence>
-          {shouldShowMenu && showScreenPanel && (
+          {screenPresentation.showMenu && (
             <motion.div
               initial={{ opacity: 0, y: -12 }}
               animate={{ opacity: 1, y: 0 }}
@@ -2771,18 +2825,10 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="mt-4 grid grid-cols-4 gap-2 text-[9px] font-mono uppercase tracking-[0.14em] max-[720px]:grid-cols-2">
+              <div className="mt-4 grid grid-cols-3 gap-2 text-[9px] font-mono uppercase tracking-[0.14em] max-[720px]:grid-cols-2">
                 <div className={`px-1 py-2 ${showControlStatus === 'connected' ? 'text-emerald-100/80' : 'text-white/42'}`}>
                   <span className="text-white/30">4300</span> <span>{showControlStatus}</span>
                 </div>
-                <button
-                  type="button"
-                  className={`rounded border px-3 py-2 text-left transition ${webglDebugOpen ? 'border-amber-300/55 bg-amber-300/15 text-amber-100' : 'border-amber-300/25 bg-amber-300/10 text-amber-100/75 hover:border-amber-300/45 hover:bg-amber-300/14'}`}
-                  onClick={() => setWebglDebugOpen((value) => !value)}
-                  aria-expanded={webglDebugOpen}
-                >
-                  Debug {debugEnabled ? 'visible' : 'hidden'}
-                </button>
                 <div className="px-1 py-2 text-white/50">
                   <span className="text-white/30">Mode</span> <span>{visualMode}</span>
                 </div>
@@ -3002,10 +3048,10 @@ export default function App() {
         </div>
       )}
 
-      {shouldShowMenu && <ShowRuntimeSettingsPanel status={showControlStatus} />}
+      <ShowRuntimeSettingsPanel status={showControlStatus} />
 
       <AnimatePresence>
-        {debugEnabled && webglDebugOpen && (
+        {debugEnabled && (
           <motion.div
             initial={{ opacity: 0, y: 10, scale: 0.98 }}
             animate={{ opacity: 1, y: 0 }}
@@ -3013,20 +3059,15 @@ export default function App() {
             className="fixed bottom-6 right-6 z-[70] w-[280px] max-w-[calc(100vw-3rem)] pointer-events-auto rounded border border-amber-300/20 bg-black/70 font-mono text-[10px] uppercase tracking-[0.18em] text-white/65 shadow-2xl backdrop-blur-xl"
             onPointerDown={(e) => e.stopPropagation()}
           >
-            <button
-              type="button"
-              className="flex w-full items-center justify-between gap-3 p-4 pb-3 text-left text-amber-100/90"
-              onClick={() => setWebglDebugOpen(false)}
-              aria-label="Close WebGL debug"
-            >
+            <div className="flex w-full items-center justify-between gap-3 p-4 pb-3 text-left text-amber-100/90">
               <span className="flex items-center gap-2">
                 <Activity size={14} />
                 <span>WebGL Debug / 调试</span>
               </span>
               <span className="rounded border border-amber-300/20 px-2 py-1 text-[9px] text-amber-100/65">
-                Close
+                4300
               </span>
-            </button>
+            </div>
 
             <div className="px-4 pb-4">
               {webglStats ? (

@@ -4,16 +4,7 @@ const controlToken = SHOW_CONTROL_TOKEN;
 const databaseUrl = FIREBASE_DATABASE_URL;
 const showId = SHOW_ID;
 
-export function getScreenGatewayUrl(screenId: string) {
-  const url = new URL(SHOW_BACKEND_URL || window.location.origin);
-  url.pathname = `/screen/${encodeURIComponent(screenId)}`;
-  url.search = '';
-  if (showId && showId !== 'show-main') url.searchParams.set('room', showId);
-  url.hash = '';
-  return url.toString().replace(/\/$/, '');
-}
-
-export type ScreenOwner = 'vj' | 'baofa' | 'off' | 'diagnostic' | 'external';
+export type ScreenOwner = 'vj' | 'baofa' | 'off' | 'diagnostic';
 
 export type ScreenRoute = {
   screenId: string;
@@ -45,14 +36,6 @@ export async function fetchScreenState(signal?: AbortSignal): Promise<{
   showStatus: 'standby' | 'running' | 'paused' | 'ended';
   clients: Record<string, ClientPresence>;
 }> {
-  if (!controlToken.trim()) throw new Error('Control token is required');
-  if (shouldReadFirebaseState()) {
-    const [state, clients] = await Promise.all([
-      fetchFirebaseJson(`shows/${safePath(showId)}/state`, signal),
-      fetchFirebaseJson(`shows/${safePath(showId)}/clients`, signal),
-    ]);
-    return normalizeScreenState(state, clients || {});
-  }
   const state = await fetchBackendState(signal);
   return normalizeScreenState(state, state?.clients || {});
 }
@@ -93,10 +76,7 @@ function normalizeShowStatus(value: unknown): 'standby' | 'running' | 'paused' |
 }
 
 function shouldReadFirebaseState() {
-  if (!databaseUrl) return false;
-  if (SHOW_TRANSPORT === 'firebase') return true;
-  if (SHOW_TRANSPORT === 'websocket' || SHOW_TRANSPORT === 'cloudflare') return !isUsableWebSocketUrl();
-  return !isUsableWebSocketUrl();
+  return SHOW_TRANSPORT === 'firebase' && Boolean(databaseUrl);
 }
 
 function isUsableWebSocketUrl() {
